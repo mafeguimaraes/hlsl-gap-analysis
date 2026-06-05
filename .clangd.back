@@ -1,0 +1,14 @@
+If:
+  PathMatch: ".*\\.hlsl(i)?$"
+CompileFlags:
+  Remove:
+    - "-f*"
+    - "-pedantic"
+    - "-c"
+    - "-UNDEBUG"
+  Add:
+    - "--driver-mode=dxc"
+    - "-T"
+    - "cs_6_6"
+    - "-E"
+    - "main"
