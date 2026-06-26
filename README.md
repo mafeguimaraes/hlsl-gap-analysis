@@ -92,12 +92,16 @@ approach is more reliable for this multi-file project.
 
 ## Documents
 
-- **`gap-analysis-updated.md`** — full gap analysis across 7 categories of
+- **`hlsl-decision-rfc.md`**: This document is a companion to the RFC and
+  records all options investigated for each gap, including options that were discarded and the
+  reasons why. 
+
+- **`gap-analysis.md`**: full gap analysis across 7 categories of
   HLSL constructs, configuration gaps, and architectural gaps. Each construct
   is tested for hover, completion, go-to-definition, and diagnostics, with
   AST dump evidence and gap classification (tooling gap vs frontend gap).
 
-- **`implementation-ideas.md`** — implementation ideas for tooling gaps, with
+- **`implementation-ideas.md`**: implementation ideas for tooling gaps, with
   root cause analysis, candidate solutions, prototypes, and open questions for
   discussion with the community.
 
