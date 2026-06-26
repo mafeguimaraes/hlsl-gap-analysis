@@ -1,6 +1,6 @@
-# HLSL RFC — Options Considered
+# HLSL RFC - Options Considered
 
-**GSoC 2026 — LLVM Organization**  
+**GSoC 2026 - LLVM Organization**  
 Author: Maria Fernanda Guimarães | Mentors: Finn Plummer, Ashley Coleman
 
 This document is a companion to the [HLSL Hover RFC](https://docs.google.com/document/d/1vrPPh_JDdTBUqbaAJazq5YgmCywiozfK/edit?usp=sharing&ouid=113807965937624010535&rtpof=true&sd=true) and
@@ -9,7 +9,7 @@ reasons why.
 
 ---
 
-## I1 — Hover for HLSL Semantic Annotations
+## I1 - Hover for HLSL Semantic Annotations
 
 ### Problem
 
@@ -31,7 +31,7 @@ The clangd hover path calls `A->getSpelling()`, which TableGen generates to retu
 
 ### Options Considered
 
-**Option A — `dyn_cast` branch in `Hover.cpp` (local fix)**
+**Option A - `dyn_cast` branch in `Hover.cpp` (local fix)**
 
 Add a `dyn_cast<HLSLParsedSemanticAttr>` branch in `getHoverContents(const Attr *A)` to
 read `getSemanticName()` directly:
@@ -47,12 +47,11 @@ if (const auto *SA = dyn_cast<HLSLParsedSemanticAttr>(A)) {
 ```
 
 Advantage: minimal change, contained in clangd only.  
-Disadvantage: adds an HLSL-specific branch to a generic clangd function. The community
-discussed this as potentially requiring a language-specific dispatch architecture instead.
+Disadvantage: adds an HLSL-specific branch to a generic clangd function. 
 
 ---
 
-**Option B — Override `getSpelling()` in the Clang attribute**
+**Option B - Override `getSpelling()` in the Clang attribute**
 
 Override `HLSLParsedSemanticAttr::getSpelling()` to return `semanticName.data()`
 dynamically.
@@ -65,7 +64,7 @@ a much larger change.
 
 ---
 
-**Option C — Explicit spellings per semantic in `Attr.td` ✅ Chosen**
+**Option C - Explicit spellings per semantic in `Attr.td` ✅ Chosen**
 
 Add each semantic as a `Microsoft<>` spelling in `HLSLParsedSemantic`. TableGen generates
 `getSpelling()` with a switch returning the correct string based on a spelling index stored at
@@ -73,7 +72,7 @@ parse time.
 
 This required seven coordinated fixes:
 
-**Fix 1** — Add explicit spellings in `Attr.td`:
+**Fix 1** - Add explicit spellings in `Attr.td`:
 
 ```td
 def HLSLParsedSemantic : HLSLSemanticBaseAttr {
@@ -92,7 +91,7 @@ def HLSLParsedSemantic : HLSLSemanticBaseAttr {
 }
 ```
 
-**Fix 2** — Add a case for `AT_HLSLParsedSemantic` in `SemaDeclAttr.cpp`:
+**Fix 2** - Add a case for `AT_HLSLParsedSemantic` in `SemaDeclAttr.cpp`:
 
 ```cpp
 case ParsedAttr::AT_HLSLParsedSemantic:
@@ -100,7 +99,7 @@ case ParsedAttr::AT_HLSLParsedSemantic:
   break;
 ```
 
-**Fix 3** — Add a case for `AT_HLSLParsedSemantic` in `ParseHLSL.cpp`:
+**Fix 3** - Add a case for `AT_HLSLParsedSemantic` in `ParseHLSL.cpp`:
 
 ```cpp
 case ParsedAttr::AT_HLSLParsedSemantic: {
@@ -116,7 +115,7 @@ case ParsedAttr::AT_HLSLParsedSemantic: {
 }
 ```
 
-**Fix 4** — Update `ParseHLSL.cpp` to resolve built-in semantics as `AT_HLSLParsedSemantic`.
+**Fix 4** - Update `ParseHLSL.cpp` to resolve built-in semantics as `AT_HLSLParsedSemantic`.
 
 The existing parser always went through `AT_HLSLUnparsedSemantic`, preventing built-in
 system-value semantics from ever being instantiated as `HLSLParsedSemanticAttr`. The fix
@@ -130,7 +129,7 @@ if (AttrKind != ParsedAttr::AT_HLSLParsedSemantic)
   AttrKind = ParsedAttr::getParsedKind(II, nullptr, ParsedAttr::AS_HLSLAnnotation);
 ```
 
-**Fix 5** — Create parsed semantic attributes using `Microsoft` form in `ParseHLSL.cpp`:
+**Fix 5** - Create parsed semantic attributes using `Microsoft` form in `ParseHLSL.cpp`:
 
 ```cpp
 ParsedAttr::Form Form =
@@ -140,7 +139,7 @@ ParsedAttr::Form Form =
 Attrs.addNew(..., Form);
 ```
 
-**Fix 6** — Preserve user-defined semantics as `HLSLUnparsedSemanticAttr` in `SemaHLSL.cpp`.
+**Fix 6** - Preserve user-defined semantics as `HLSLUnparsedSemanticAttr` in `SemaHLSL.cpp`.
 
 Before this change, `handleSemanticAttr()` classified semantics based on whether the name
 started with `SV_`, causing user-defined semantics to be materialized as
@@ -155,7 +154,7 @@ if (AL.getKind() == ParsedAttr::AT_HLSLParsedSemantic) {
 }
 ```
 
-**Fix 7** — Add dedicated hover rendering for `HLSLUnparsedSemanticAttr` in `Hover.cpp`.
+**Fix 7** - Add dedicated hover rendering for `HLSLUnparsedSemanticAttr` in `Hover.cpp`.
 
 The generic `printPretty` produced confusing output like `[SV_Position("COLOR", 0)]` for
 user-defined semantics. The dedicated branch:
@@ -173,7 +172,7 @@ if (const auto *SA = llvm::dyn_cast<HLSLUnparsedSemanticAttr>(A)) {
 
 ---
 
-**Option D — Explicit `def` per semantic**
+**Option D - Explicit `def` per semantic**
 
 Add a separate `def` in `Attr.td` for each system semantic, following the pre-existing
 `HLSLPositionSemantic` pattern. Each def has exactly one `Microsoft<>` spelling.
@@ -194,7 +193,7 @@ parser switch.
 
 ---
 
-## I2 — Hover for Loop/Branch Control Attributes
+## I2 - Hover for Loop/Branch Control Attributes
 
 ### Problem
 
@@ -227,13 +226,13 @@ Root cause: in `ParseDeclCXX.cpp`, when an attribute has no arguments, `addNew` 
 with only `NameLoc` (a single point). When arguments are present, `ParseCXX11AttributeArgs`
 computes the correct end location from the closing `]`.
 
-This bug did not need to be fixed to make hover work — the `traverseNode` mechanism finds
+This bug did not need to be fixed to make hover work, the `traverseNode` mechanism finds
 the attribute as part of the `AttributedStmt` traversal regardless of range matching. It is a
 separate correctness issue for other consumers.
 
 ### Options Considered
 
-**Option A — Scope fix to HLSL attributes only**
+**Option A - Scope fix to HLSL attributes only**
 
 Add the `TraverseAttributedStmt` override but guard it to only call `TraverseAttr` for HLSL
 attributes.
@@ -244,7 +243,7 @@ statement attributes are added.
 
 ---
 
-**Option B — Generic fix for all statement attributes ✅ Chosen**
+**Option B - Generic fix for all statement attributes ✅ Chosen**
 
 Add `TraverseAttributedStmt` without any language-specific guard:
 
@@ -271,7 +270,7 @@ language-specific guards, and benefits the entire clangd ecosystem.
 
 ---
 
-## I3 — Hover for `out`/`inout` Parameter Qualifiers
+## I3 - Hover for `out`/`inout` Parameter Qualifiers
 
 ### Problem
 
@@ -286,7 +285,7 @@ print the raw Clang type without consulting this attribute.
 
 ### Options Considered
 
-**Option A — Strip the reference type in the generic `ValueDecl` path**
+**Option A - Strip the reference type in the generic `ValueDecl` path**
 
 Modify the existing `ValueDecl` branch to detect `__restrict` references and strip them.
 
@@ -295,13 +294,13 @@ non-HLSL types incorrectly.
 
 ---
 
-**Option B — `dyn_cast<ParmVarDecl>` branch checking `HLSLParamModifierAttr` ✅ Chosen**
+**Option B - `dyn_cast<ParmVarDecl>` branch checking `HLSLParamModifierAttr` ✅ Chosen**
 
 Add a `ParmVarDecl` branch before the generic `ValueDecl` branch at each of the three
 affected locations in `Hover.cpp`. The branch strips the reference type and prepends the HLSL
 qualifier when `HLSLParamModifierAttr` is present.
 
-**Case 1 — `Type` field when hovering on the variable:**
+**Case 1 - `Type` field when hovering on the variable:**
 ```cpp
 // getHoverContents(const NamedDecl *D)
 else if (const auto *VD = dyn_cast<ValueDecl>(D))
@@ -309,20 +308,20 @@ else if (const auto *VD = dyn_cast<ValueDecl>(D))
 ```
 `ParmVarDecl` is a subclass of `ValueDecl`, so it falls into this generic case.
 
-**Case 2 — `Type` field in function signature tooltip:**
+**Case 2 - `Type` field in function signature tooltip:**
 ```cpp
 // toHoverInfoParam()
 Out.Type = printType(PVD->getType(), PVD->getASTContext(), PP);  // shows "float &__restrict"
 ```
 
-**Case 3 — `Definition` line in hover tooltip:**
+**Case 3 - `Definition` line in hover tooltip:**
 ```cpp
 // getHoverContents(const NamedDecl *D)
 HI.Definition = printDefinition(D, PP, TB);  // shows "out float &__restrict b"
 ```
 `printDefinition` calls `D->print()` which uses the internal C++ printer.
 
-**Case 1 fix** — add a `ParmVarDecl` case before the generic `ValueDecl` case:
+**Case 1 fix** - add a `ParmVarDecl` case before the generic `ValueDecl` case:
 
 ```cpp
 else if (const auto *PVD = dyn_cast<ParmVarDecl>(D)) {
@@ -358,7 +357,7 @@ else if (const auto *VD = dyn_cast<ValueDecl>(D))
   HI.Type = printType(VD->getType(), Ctx, PP);
 ```
 
-**Case 2 fix** — same logic in `toHoverInfoParam`:
+**Case 2 fix** - same logic in `toHoverInfoParam`:
 
 ```cpp
 if (const auto *Mod = PVD->getAttr<HLSLParamModifierAttr>()) {
@@ -375,7 +374,7 @@ if (const auto *Mod = PVD->getAttr<HLSLParamModifierAttr>()) {
 }
 ```
 
-**Case 3 fix** — override `HI.Definition` after `printDefinition`:
+**Case 3 fix** - override `HI.Definition` after `printDefinition`:
 
 ```cpp
 HI.Definition = printDefinition(D, PP, TB);
@@ -391,7 +390,7 @@ if (const auto *PVD = dyn_cast<ParmVarDecl>(D)) {
 }
 ```
 
-All three cases confirmed working — hover now shows:
+All three cases confirmed working, hover now shows:
 - `a` (in) → `Type: float` / `// In paramTest\nin float a`
 - `b` (out) → `Type: out float` / `// In paramTest\nout float b`
 - `c` (inout) → `Type: inout float` / `// In paramTest\ninout float c`
@@ -409,7 +408,7 @@ language-specific constructs.
 
 ---
 
-## I4 — Hover for Vector Swizzle and Matrix Element Access
+## I4 - Hover for Vector Swizzle and Matrix Element Access
 
 ### Problem
 
@@ -423,7 +422,7 @@ to the nearest `VarDecl` and shows the base variable type instead.
 
 ### Options Considered
 
-**Option A — Language-specific dispatch layer**
+**Option A - Language-specific dispatch layer**
 
 Route HLSL expression nodes through a dedicated HLSL hover handler rather than adding
 `dyn_cast` branches to the generic `getHoverContents`.
@@ -434,7 +433,7 @@ not purely HLSL.
 
 ---
 
-**Option B — `dyn_cast` branches in `getHoverContents` ✅ Chosen**
+**Option B - `dyn_cast` branches in `getHoverContents` ✅ Chosen**
 
 Add two branches following the same pattern as `CXXThisExpr` and `PredefinedExpr`:
 
@@ -464,7 +463,7 @@ architectural discussion and can be addressed independently in the future.
 
 ---
 
-## I5 — `RootSignature` Hover Leaking Internal Identifier
+## I5 - `RootSignature` Hover Leaking Internal Identifier
 
 ### Problem
 
@@ -482,12 +481,12 @@ not stored anywhere in the attribute after parsing.
 The generic hover path calls `A->printPretty()`, which prints the stored identifier, leaking the
 internal name.
 
-`getSignatureIdent()->getName()` was also investigated — it returns the same generated name,
+`getSignatureIdent()->getName()` was also investigated, it returns the same generated name,
 not the original string.
 
 ### Options Considered
 
-**Option A — Store the original string literal in `RootSignatureAttr`**
+**Option A - Store the original string literal in `RootSignatureAttr`**
 
 Add a `StringRef` or `IdentifierInfo*` field to `RootSignatureAttr` in `Attr.td` that preserves
 the original user-written string, and populate it in `ParseHLSLRootSignatureAttributeArgs`.
@@ -497,17 +496,17 @@ parser. Out of scope for this patch.
 
 ---
 
-**Option B — Recover the original string via `getSignatureDecl()`**
+**Option B - Recover the original string via `getSignatureDecl()`**
 
 `RootSignatureAttr` also stores a `HLSLRootSignatureDecl*` via `getSignatureDecl()`. This
 decl might carry the original name.
 
 Investigation showed the decl name is also the generated `__hlsl_rootsig_decl_<hash>`
-identifier — the original string is not recoverable through this path either.
+identifier, the original string is not recoverable through this path either.
 
 ---
 
-**Option C — Skip `printPretty`; show documentation only ✅ Chosen**
+**Option C - Skip `printPretty`; show documentation only ✅ Chosen**
 
 Add a `dyn_cast<RootSignatureAttr>` branch in `getHoverContents(const Attr *A)` that sets
 `HI.Name` and `HI.Documentation` and returns without setting `HI.Definition`:
@@ -533,11 +532,11 @@ limitation and future work.
 
 ---
 
-## I6 — `register` Hover Not Triggered Inside Arguments
+## I6 - `register` Hover Not Triggered Inside Arguments
 
 ### Problem
 
-Hovering inside `register(t1)` — for example on `t1` — produces no hover. Only hovering
+Hovering inside `register(t1)`, for example on `t1`, produces no hover. Only hovering
 directly on the `register` keyword triggers the tooltip.
 
 ### Root Cause
@@ -555,21 +554,21 @@ one accepting `SourceRange`. The single-point overload was used, so the stored r
 
 When the `SelectionTree` checks whether the cursor falls inside an attribute, it tests
 `range.contains(cursor)`. A zero-width range only contains its own start point, so any cursor
-position inside `(t1)` — including on `t`, `1`, or the parentheses — never matched.
+position inside `(t1)`, including on `t`, `1`, or the parentheses, never matched.
 
 This is the same class of zero-width range bug identified for `[unroll]` in I2, but caused by
 the `addNew` call in the parser rather than by missing argument parsing.
 
 ### Options Considered
 
-**Option A — Fix the range only for `AT_HLSLResourceBinding`**
+**Option A - Fix the range only for `AT_HLSLResourceBinding`**
 
 Capture the closing `)` location inside the `AT_HLSLResourceBinding` case and pass a
 `SourceRange` to `addNew` only for that case, leaving other attributes unchanged.
 
 ---
 
-**Option B — Fix the range for all attributes via a shared `AttrEndLoc` variable ✅ Chosen**
+**Option B - Fix the range for all attributes via a shared `AttrEndLoc` variable ✅ Chosen**
 
 Declare `SourceLocation AttrEndLoc = Loc` before the switch (defaulting to the start location,
 preserving zero-width behavior for attributes that don't update it). Inside
