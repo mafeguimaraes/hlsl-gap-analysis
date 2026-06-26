@@ -128,7 +128,7 @@ clang -x hlsl -target dxil-pc-shadermodel6.3-library \
 | Construct | Hover | Completion | Go-to-def | Diagnostics | AST Node | Notes |
 | :--- | :---: | :---: | :---: | :---: | :--- | :--- |
 | `dot`, `mul`, `normalize`, `saturate`, `lerp` | ✅ | ✅ | ✅ | ✅ | `CallExpr` | Full LSP support. Hover accurately displays signatures. Go-to-def successfully navigates to internal headers (e.g., `hlsl_alias_intrinsics.h`). |
-| `.Sample()`, `.Load()`, `.Store()` | ❌ | ⚠️ | ❌ | ❌ | N/A | Hover and go-to-def fail — clangd cannot resolve methods due to `Texture2D` partial specialization ambiguity. Completion shows global HLSL symbols instead of `Texture2D` members. Writing to a read-only `Texture2D` via `tex2d[coords] = value` produces no diagnostic. |
+| `.Sample()`, `.Load()`, `.Store()` | ✅ | ⚠️ | ❌ | ❌ | N/A | Hover and go-to-def fail — clangd cannot resolve methods due to `Texture2D` partial specialization ambiguity. Completion shows global HLSL symbols instead of `Texture2D` members. Writing to a read-only `Texture2D` via `tex2d[coords] = value` produces no diagnostic. |
 
 ---
 

@@ -1,7 +1,7 @@
-Texture2D           tex0 : register(t0, space0);   // SRV, default space
-Texture2D           tex1 : register(t0, space1);   // SRV, same slot, different space
+Texture2D <float4> tex0 : register(t0, space0);   // SRV, default space
+Texture2D<float4>  tex1 : register(t0, space1);   // SRV, same slot, different space
 RWTexture2D<float4> rw0  : register(u0, space0);   // UAV
-SamplerState        samp : register(s0, space2);   // Sampler
+SamplerState samp : register(s0, space2);   // Sampler
 
 cbuffer Constants : register(b0, space0) {
     float4 color;
