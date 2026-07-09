@@ -29,9 +29,9 @@ The hover path in clangd is:
 
 ```
 getHoverContents(const Attr *A)
-  → HI.Name = A->getSpelling()
-  → HLSLParsedSemanticAttr::getSpelling()
-  → "(No spelling)"
+  -> HI.Name = A->getSpelling()
+  -> HLSLParsedSemanticAttr::getSpelling()
+  -> "(No spelling)"
 ```
 
 `getSpelling()` returns `"(No spelling)"` because `HLSLParsedSemanticAttr` is
@@ -88,9 +88,9 @@ D->addAttr(createSemanticAttr<HLSLDispatchThreadIDSemanticAttr>(AL, Index));
 ```
 
 **Confirmed working**, hover now shows correct names:
-- `SV_Target0` → hover shows `SV_Target` ✅
-- `SV_Position` → hover shows `SV_Position` ✅
-- `SV_DispatchThreadID` → hover shows `SV_DispatchThreadID` ✅
+- `SV_Target0` -> hover shows `SV_Target` 
+- `SV_Position` -> hover shows `SV_Position` 
+- `SV_DispatchThreadID` -> hover shows `SV_DispatchThreadID` 
 
 **Note:** Semantics without a `def` still show `Unknown HLSL semantic` error (e.g. `SV_ClipDistance`).
 
@@ -261,10 +261,10 @@ bool TraverseAttributedStmt(AttributedStmt *S) {
 ```
 
 **Confirmed working** - hover now shows correct tooltips for all loop/branch attributes:
-- `[unroll]` → hover shows `unroll` with documentation ✅
-- `[loop]` → hover shows `loop` ✅
-- `[branch]` → hover shows `branch` ✅
-- `[flatten]` → hover shows `flatten` ✅
+- `[unroll]` -> hover shows `unroll` with documentation 
+- `[loop]` ->hover shows `loop` 
+- `[branch]` -> hover shows `branch` 
+- `[flatten]` -> hover shows `flatten` 
 
 **Important discovery:** The zero-width source range (Problem D) did **not** need
 to be fixed, the hover works correctly even with zero-width ranges, because
@@ -408,9 +408,9 @@ if (const auto *PVD = dyn_cast<ParmVarDecl>(D)) {
 ```
 
 All three cases confirmed working - hover now shows:
-- `a` (in) → `Type: float` / `// In paramTest\nin float a`
-- `b` (out) → `Type: out float` / `// In paramTest\nout float b`
-- `c` (inout) → `Type: inout float` / `// In paramTest\ninout float c`
+- `a` (in) -> `Type: float` / `// In paramTest\nin float a`
+- `b` (out) -> `Type: out float` / `// In paramTest\nout float b`
+- `c` (inout) -> `Type: inout float` / `// In paramTest\ninout float c`
 
 Note: `in` qualifier is intentionally omitted from the type display since it
 is the default in HLSL.
@@ -454,7 +454,7 @@ not purely HLSL.
 
 ---
 
-**Option B - `dyn_cast` branches in `getHoverContents` ✅ Chosen**
+**Option B - `dyn_cast` branches in `getHoverContents` Chosen**
 
 Add two branches following the same pattern as `CXXThisExpr` and `PredefinedExpr`:
 
@@ -519,7 +519,7 @@ identifier, the original string is not recoverable through this path either.
 
 ---
 
-**Option C - Skip `printPretty`; show documentation only ✅ Chosen**
+**Option C - Skip `printPretty`; show documentation only Chosen**
 
 Add a `dyn_cast<RootSignatureAttr>` branch in `getHoverContents(const Attr *A)` that sets
 `HI.Name` and `HI.Documentation` and returns without setting `HI.Definition`:
@@ -581,7 +581,7 @@ Capture the closing `)` location inside the `AT_HLSLResourceBinding` case and pa
 
 ---
 
-**Option B - Fix the range for all attributes via a shared `AttrEndLoc` variable ✅ Chosen**
+**Option B - Fix the range for all attributes via a shared `AttrEndLoc` variable Chosen**
 
 Declare `SourceLocation AttrEndLoc = Loc` before the switch (defaulting to the start location,
 preserving zero-width behavior for attributes that don't update it). Inside
@@ -641,8 +641,7 @@ grep -n "RWTexture2D" clang/lib/Sema/HLSLExternalSemaSource.cpp
 # no output
 ```
 
-Without this definition, the Clang doesn't know what `RWTexture2D` is -
-every use is an error and the AST is invalid for this type.
+Without this definition, the Clang doesn't know what `RWTexture2D` is, every use is an error and the AST is invalid for this type.
 
 **`SamplerState` - incomplete type:**
 
@@ -673,10 +672,10 @@ clang problems, but prerequisites for any hover support.
 Hover for `register` bindings was broken for resource types. After Finn's
 patch (I4), the status is now:
 
-- `cbuffer` / `ConstantBuffer<T>` - ✅ always worked
-- `Texture2D` - ✅ works 
-- `SamplerState` - ✅ works
-- `RWTexture2D` - ❌ blocked by Clang-level work in progress (same as I4)
+- `cbuffer` / `ConstantBuffer<T>` - always worked
+- `Texture2D` -  works 
+- `SamplerState` - works
+- `RWTexture2D` - blocked by Clang-level work in progress (same as I4)
 
 ### What Changed
 
@@ -721,6 +720,638 @@ if (const auto *RB = llvm::dyn_cast<HLSLResourceBindingAttr>(A)) {
 - `clang-tools-extra/clangd/Hover.cpp` (optional display handler)
 - `clang-tools-extra/clangd/unittests/HoverTests.cpp`
 
+---
+## Idea I9: Code Completion Suggests Declaration Attributes Inside Statement Position (`[unroll]`, `[branch]`, etc.)
+
+### Gap
+
+Triggering code completion after `[` inside a statement (e.g. between `switch`
+and the closing `}` of a function body) suggests every HLSL bracket attribute
+indiscriminately, mixing statement attributes with declaration attributes:
+
+```
+branch
+flatten
+loop(directive)
+numthreads(X, Y, Z)        <- declaration attribute, invalid here
+RootSignature(SignatureIdent) <- declaration attribute, invalid here
+shader(Type)                <- declaration attribute, invalid here
+SV_DispatchThreadID(...)    <- semantic, invalid here
+SV_GroupID(...)
+...
+unroll(directive)
+```
+
+`numthreads`, `RootSignature`, `shader`, and every `SV_*` semantic only make
+sense on an entry-point function declaration, never inside a statement.
+
+### Root Cause
+
+Confirmed via the clangd trace log for the completion request:
+
+```
+Code complete: sema context Attribute, query scopes [] (AnyScope=true), expected type <none>
+Code complete: 15 results from Sema, 0 from Index, 0 matched, 0 from identifiers, 15 returned.
+```
+
+`sema context Attribute` corresponds to `CodeCompletionContext::CCC_Attribute`,
+set inside `SemaCodeCompletion::CodeCompleteAttribute`. Tracing the call chain
+showed this project's own `CodeCompleteHLSLAnnotation` (added for semantic
+completion after `:`) is never reached for this case, commenting it out had
+no effect on the bug, confirming it wasn't the source.
+
+Searching all call sites of `CodeCompleteAttribute` and narrowing by which
+ones use `AttributeCommonInfo::AS_Microsoft` led to
+`Parser::ParseMicrosoftAttributes` in `ParseDeclCXX.cpp`:
+
+```cpp
+void Parser::ParseMicrosoftAttributes(ParsedAttributes &Attrs) {
+  assert(Tok.is(tok::l_square) && "Not a Microsoft attribute list");
+  ...
+  if (Tok.is(tok::code_completion)) {
+    cutOffParsing();
+    Actions.CodeCompletion().CodeCompleteAttribute(
+        AttributeCommonInfo::AS_Microsoft,
+        SemaCodeCompletion::AttributeCompletion::Attribute,
+        /*Scope=*/nullptr);
+    break;
+  }
+```
+
+This function parses `[...]` bracket attributes and is shared between MSVC
+(`__declspec`-style bracket attrs, e.g. `uuid`) and HLSL, confirmed by:
+
+```cpp
+// ParseDeclCXX.cpp:4456
+if (getLangOpts().MicrosoftExt || getLangOpts().HLSL) {
+```
+
+The completion call filters candidates only by `AttributeCommonInfo::Syntax
+== AS_Microsoft`. Every HLSL bracket attribute, statement attributes
+(`[unroll]`, `[branch]`) and declaration attributes (`[numthreads]`,
+`[RootSignature]`) alike, was given a `Microsoft<>` spelling as part of I1
+(the semantic hover fix), which means they all share `AS_Microsoft` and are
+therefore indistinguishable by `Syntax` alone at this call site. `Syntax`
+was sufficient for MSVC's own bracket attributes, where no statement/declaration
+split of this kind exists, so the gap was latent until HLSL's dual-context
+bracket attributes exposed it.
+
+Checking all call sites of `MaybeParseMicrosoftAttributes` confirmed the
+statement/declaration split is knowable at the call site:
+
+```bash
+grep -rn "ParseMicrosoftAttributes(" clang/lib/Parse/*.cpp clang/include/clang/Parse/Parser.h
+```
+
+```
+ParseDecl.cpp:6152      <- parameter declaration
+ParseDecl.cpp:7641      <- parameter declaration
+ParseDeclCXX.cpp:2788   <- decl-specifier
+Parser.cpp:1060         <- decl-specifier
+ParseStmt.cpp:76        <- statement, gated by `if (getLangOpts().HLSL)`
+ParseTentative.cpp:1763 <- decl-specifier
+```
+
+Only `ParseStmt.cpp:76` is a statement context, and it is the only call site
+gated on `getLangOpts().HLSL`, meaning it does not fire at all for
+non-HLSL/MSVC code. The other five are unambiguously declaration/parameter
+contexts. This confirms `ParsedAttrInfo::IsStmt` (already the basis of the
+`TraverseAttributedStmt` fix in I2) is the correct discriminator, and that it
+can be threaded through cleanly without touching non-HLSL behavior.
+
+### Options Considered
+
+**Option A - Filter inside the shared `CodeCompleteAttribute`**
+
+Add a statement/declaration parameter directly to the generic
+`SemaCodeCompletion::CodeCompleteAttribute`, used by `__declspec`, GNU
+`__attribute__`, C++11 `[[...]]`, and Microsoft bracket attributes alike.
+Rejected: this function is shared well beyond HLSL, and any change to its
+filtering risks altering completion behavior for MSVC/C++ attributes that
+have no statement/declaration ambiguity today.
+
+---
+
+**Option B - Thread `IsStmtContext` through `ParseMicrosoftAttributes` and
+dispatch to a dedicated HLSL completion path Chosen**
+
+Add a defaulted `bool IsStmtContext = false` parameter to
+`MaybeParseMicrosoftAttributes` / `ParseMicrosoftAttributes`. Only
+`ParseStmt.cpp:76` passes `true`; the other five call sites are unchanged,
+preserving their existing (default) behavior exactly:
+
+```cpp
+bool MaybeParseMicrosoftAttributes(ParsedAttributes &Attrs,
+                                    bool IsStmtContext = false) {
+  if ((getLangOpts().MicrosoftExt || getLangOpts().HLSL) &&
+      Tok.is(tok::l_square)) {
+    ParsedAttributes AttrsWithRange(AttrFactory);
+    ParseMicrosoftAttributes(AttrsWithRange, IsStmtContext);
+    AttrsParsed = !AttrsWithRange.empty();
+    Attrs.takeAllAppendingFrom(AttrsWithRange);
+  }
+  return AttrsParsed;
+}
+```
+
+Inside `ParseMicrosoftAttributes`, only diverge from the existing generic
+path when compiling HLSL, leaving MSVC/`uuid` completion untouched:
+
+```cpp
+if (Tok.is(tok::code_completion)) {
+  cutOffParsing();
+  if (getLangOpts().HLSL) {
+    Actions.CodeCompletion().CodeCompleteHLSLAttributes(
+        {AttributeCommonInfo::AS_Microsoft}, /*Kind=*/std::nullopt,
+        /*RequireStmt=*/IsStmtContext,
+        /*ExcludeKind=*/ParsedAttr::AT_HLSLParsedSemantic);
+  } else {
+    Actions.CodeCompletion().CodeCompleteAttribute(
+        AttributeCommonInfo::AS_Microsoft,
+        SemaCodeCompletion::AttributeCompletion::Attribute,
+        /*Scope=*/nullptr);
+  }
+  break;
+}
+```
+
+`CodeCompleteHLSLAttributes` filters `ParsedAttrInfo::getAllBuiltin()` by a
+list of accepted `Syntax` values, an optional `ParsedAttr::Kind` restriction,
+an optional `RequireStmt` flag, and an optional `ExcludeKind`:
+
+```cpp
+void SemaCodeCompletion::CodeCompleteHLSLAttributes(
+    llvm::ArrayRef<AttributeCommonInfo::Syntax> Syntaxes,
+    std::optional<ParsedAttr::Kind> RestrictToKind,
+    bool RequireStmt,
+    std::optional<ParsedAttr::Kind> ExcludeKind) {
+  ResultBuilder Results(..., CodeCompletionContext::CCC_Attribute);
+  for (const auto *A : ParsedAttrInfo::getAllBuiltin()) {
+    if (!A->acceptsLangOpts(getLangOpts()))
+      continue;
+    if (RestrictToKind && A->AttrKind != *RestrictToKind)
+      continue;
+    if (ExcludeKind && A->AttrKind == *ExcludeKind)
+      continue;
+    if (A->IsStmt != RequireStmt)
+      continue;
+    for (const auto &S : A->Spellings) {
+      if (!llvm::is_contained(Syntaxes, S.Syntax))
+        continue;
+      // add completion item
+    }
+  }
+}
+```
+
+The `ExcludeKind=AT_HLSLParsedSemantic` parameter is required because
+`SV_*` semantics also have `IsStmt=0`, the same as declaration attributes
+like `numthreads` and `shader`. Without the exclusion, the declaration
+context completion (`[` outside a function) would incorrectly include
+`SV_Target`, `SV_Position`, etc., which are only valid after `:` in
+parameter/return type annotations, not inside `[...]` brackets.
+
+---
+
+### Why Option B
+
+Option A risks regressing completion for non-HLSL Microsoft/C++ attributes
+that never needed a statement/declaration distinction. Option B isolates the
+fix to the single call site that is already exclusively HLSL-gated
+(`ParseStmt.cpp:76`), leaves the five declaration/parameter call sites
+byte-for-byte unchanged via the defaulted parameter, and reuses the same
+`IsStmt` field that already grounds the I2 hover fix, keeping the
+statement/declaration distinction consistent across both hover and
+completion.
+
+### Result
+
+| Context | Before | After |
+|---|---|---|
+| `[` inside function body | all attrs mixed | only `branch`, `flatten`, `loop`, `unroll` |
+| `[` outside function (global) | all attrs mixed | only `numthreads`, `shader`, `RootSignature`, `WaveSize` |
+
+### Known Limitation (Out of Scope for This Fix)
+
+Completion after `:` (semantic annotation position) still mixes `register`,
+`packoffset`, and semantic names, since all three are syntactically valid
+after `TypeName varName :` and this call site (`ParseHLSLAnnotations`, not
+`ParseMicrosoftAttributes`) does not currently inspect the declared type to
+disambiguate resource declarations from shader I/O parameters. Tracked
+separately; not addressed by this change.
+
+### Files Modified
+
+- `clang/include/clang/Parse/Parser.h` - `MaybeParseMicrosoftAttributes` /
+  `ParseMicrosoftAttributes` signatures updated with `bool IsStmtContext = false`
+- `clang/lib/Parse/ParseDeclCXX.cpp` - `ParseMicrosoftAttributes` body
+  dispatches to `CodeCompleteHLSLAttributes` for HLSL, passing `IsStmtContext`
+  and `ExcludeKind=AT_HLSLParsedSemantic`
+- `clang/lib/Parse/ParseStmt.cpp` - passes `/*IsStmtContext=*/true` at the
+  HLSL statement call site
+- `clang/include/clang/Sema/SemaCodeCompletion.h` - `CodeCompleteHLSLAttributes`
+  declaration with 4 parameters (Syntaxes, RestrictToKind, RequireStmt, ExcludeKind)
+- `clang/lib/Sema/SemaCodeComplete.cpp` - `CodeCompleteHLSLAttributes`
+  implementation
+- `clang-tools-extra/clangd/unittests/CodeCompleteTests.cpp` - tests 
+---
+## Idea I10: Code Completion Inside `register(...)` Arguments
+
+### Gap
+
+Triggering code completion inside `register(...)` produces generic top-level
+completion (types, keywords, intrinsics) instead of the valid resource slot
+prefixes and the `space` keyword:
+
+```hlsl
+StructuredBuffer<int> buf : register(|)        // shows types/keywords, not t/u/b/s
+StructuredBuffer<int> buf : register(t0, |)    // shows types/keywords, not "space"
+```
+
+### Root Cause
+
+`ParseHLSLAnnotations` in `clang/lib/Parse/ParseHLSL.cpp` handles the
+`AT_HLSLResourceBinding` case but had no `tok::code_completion` hooks inside
+the argument parsing logic. The `tok::code_completion` token fell through to
+the `!Tok.is(tok::identifier)` error branch, which called
+`SkipUntil(tok::r_paren)` and returned, the parser then resumed at top-level
+context, producing generic completion results.
+
+### Solution (Implemented)
+
+Two `tok::code_completion` hooks added inside `case ParsedAttr::AT_HLSLResourceBinding`:
+
+**Hook 1 - slot prefix position** (`register(|`):
+
+```cpp
+// Code completion for the resource slot prefix: register(t|
+if (Tok.is(tok::code_completion)) {
+  ConsumeCodeCompletionToken();
+  Actions.CodeCompletion().CodeCompleteHLSLResourceSlot(D);
+  return;
+}
+if (!Tok.is(tok::identifier)) { ... }
+StringRef SlotStr = Tok.getIdentifierInfo()->getName();
+```
+
+**Hook 2 - space position** (`register(t0, |`):
+
+```cpp
+ConsumeToken(); // consume comma
+// Code completion for the space keyword: register(t0, space|
+if (Tok.is(tok::code_completion)) {
+  ConsumeCodeCompletionToken();
+  Actions.CodeCompletion().CodeCompleteHLSLResourceSpace();
+  return;
+}
+if (!Tok.is(tok::identifier)) { ... }
+```
+
+Both hooks use `ConsumeCodeCompletionToken()` instead of `cutOffParsing()`,
+consistent with the approach adopted in I9 for `ParseHLSLAnnotations`.
+
+**`CodeCompleteHLSLResourceSlot`** receives the `Declarator *D` and filters
+by resource type using the same record-name mapping as `CodeCompleteHLSLAnnotation`.
+If the type is known, only the matching prefix is suggested; otherwise all four
+are shown as fallback:
+
+```cpp
+void SemaCodeCompletion::CodeCompleteHLSLResourceSlot(const Declarator *D) {
+  char KnownSlot = 0;
+  if (D) { /* same type resolution as CodeCompleteHLSLAnnotation */ }
+
+  static const SlotPrefix Prefixes[] = {
+      {"t", "Shader resource view (SRV)"},
+      {"u", "Unordered access view (UAV)"},
+      {"b", "Constant buffer (CBV)"},
+      {"s", "Sampler state"},
+  };
+  for (const auto &P : Prefixes) {
+    if (KnownSlot && P.Letter[0] != KnownSlot)
+      continue; // skip non-matching slots when type is known
+    // CCB.AddTypedTextChunk(P.Letter) + CCB.AddPlaceholderChunk("0")
+  }
+}
+```
+
+```hlsl
+RWStructuredBuffer<float4> buf : register(|)  // suggests only: u0 
+StructuredBuffer<float4>   buf : register(|)  // suggests only: t0 
+SamplerState               s   : register(|)  // suggests only: s0 
+// unknown type: shows all t0, u0, b0, s0
+```
+
+**`CodeCompleteHLSLResourceSpace`** suggests `space` with a `0` placeholder:
+
+```cpp
+CCB.AddTypedTextChunk("space");
+CCB.AddPlaceholderChunk("0");
+```
+
+Both lists are intentionally small and hardcoded, unlike semantics and
+bracket attributes, these are not registered in `Attr.td` as named spellings.
+The slot prefixes (`t`, `u`, `b`, `s`) and the `space` keyword are parsed
+as raw strings inside the `AT_HLSLResourceBinding` custom parser, so there
+is no TableGen source to drive them.
+
+### Files Modified
+
+- `clang/lib/Parse/ParseHLSL.cpp` - two `tok::code_completion` hooks inside
+  `case ParsedAttr::AT_HLSLResourceBinding`
+- `clang/include/clang/Sema/SemaCodeCompletion.h` - declarations for
+  `CodeCompleteHLSLResourceSlot(const Declarator *D = nullptr)` and
+  `CodeCompleteHLSLResourceSpace`
+- `clang/lib/Sema/SemaCodeComplete.cpp` - implementations of both functions
+- `clang-tools-extra/clangd/unittests/CodeCompleteTests.cpp` - tests
+
+---
+
+## Idea I11: Code Completion for HLSL Annotations After `:`
+
+### Gap
+
+Typing `: ` after a variable or parameter declaration in HLSL produced no
+completion results from clangd, the editor fell back to text-based
+suggestions only:
+
+```hlsl
+float4 PSMain() : |          // no clangd suggestions
+float4 color : |             // no clangd suggestions
+Texture2D tex : |            // no clangd suggestions
+RWStructuredBuffer<float4> buf : |  // no clangd suggestions
+```
+
+### Root Cause
+
+HLSL annotations after `:` are parsed by `ParseHLSLAnnotations` in
+`clang/lib/Parse/ParseHLSL.cpp`, a completely separate path from `[[...]]`
+attribute parsing. The function had no `tok::code_completion` hook.
+
+When the user typed `: ` and stopped, the token fell into the `if (!II)`
+error branch and was discarded:
+
+```
+tok::colon -> consumed
+tok::code_completion -> not kw_register, not identifier -> II = nullptr
+if (!II) -> Diag(err_expected_semantic_identifier) -> return
+```
+
+### Solution (Implemented)
+
+**Hook in `ParseHLSLAnnotations`:**
+
+```cpp
+else if (Tok.is(tok::code_completion)) {
+  ConsumeCodeCompletionToken();
+  Actions.CodeCompletion().CodeCompleteHLSLAnnotation(D);
+  return;
+}
+```
+
+**`ParseHLSLAnnotations` signature extended** to accept `const Declarator *D`:
+
+```cpp
+void Parser::ParseHLSLAnnotations(ParsedAttributes &Attrs,
+                                  SourceLocation *EndLoc = nullptr,
+                                  bool CouldBeBitField = false,
+                                  const Declarator *D = nullptr);
+```
+
+`MaybeParseHLSLAnnotations(Declarator &D)` passes `&D` through, making the
+declared type available at the completion call site.
+
+**`CodeCompleteHLSLAnnotation`** data-driven from `Attr.td`, with
+type-aware slot filtering:
+
+```cpp
+void SemaCodeCompletion::CodeCompleteHLSLAnnotation(const Declarator *D) {
+  // Determine the register slot from the declared type name.
+  // HLSLAttributedResourceType is not yet built at parse time, so we
+  // match the CXXRecordDecl name directly.
+  char KnownSlot = 0;
+  if (D) {
+    const DeclSpec &DS = D->getDeclSpec();
+    if (DS.getTypeSpecType() == DeclSpec::TST_typename) {
+      QualType QT = SemaRef.GetTypeFromParser(DS.getRepAsType());
+      if (!QT.isNull()) {
+        const Type *Ty = QT->getUnqualifiedDesugaredType();
+        if (const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl()) {
+          llvm::StringRef TypeName = RD->getName();
+          if (TypeName.starts_with("RW") ||
+              TypeName.starts_with("RasterizerOrdered"))
+            KnownSlot = 'u';
+          else if (TypeName == "StructuredBuffer" ||
+                   TypeName == "Buffer" ||
+                   TypeName.starts_with("Texture") ||
+                   TypeName == "ByteAddressBuffer")
+            KnownSlot = 't';
+          else if (TypeName == "ConstantBuffer")
+            KnownSlot = 'b';
+          else if (TypeName.starts_with("Sampler"))
+            KnownSlot = 's';
+        }
+      }
+    }
+  }
+  // ... iterate Attr.td builtins, emit register/packoffset snippets
+  // and semantic keywords
+}
+```
+
+**Snippet completion for `register` and `packoffset`:**
+
+`register` uses `CCP_CodePattern` with `CXCursor_Constructor` to prevent
+`shouldPatchPlaceholder0` from converting the last placeholder to `$0`:
+
+```cpp
+char SlotAsText[] = {KnownSlot, '\0'};
+CCB.AddTypedTextChunk("register");
+CCB.AddChunk(CodeCompletionString::CK_LeftParen);
+CCB.AddTextChunk(SlotAsText);
+CCB.AddPlaceholderChunk("0"); 
+CCB.AddChunk(CodeCompletionString::CK_Comma);
+CCB.AddChunk(CodeCompletionString::CK_HorizontalSpace);
+CCB.AddTextChunk("space");
+CCB.AddPlaceholderChunk("0");
+CCB.AddChunk(CodeCompletionString::CK_RightParen);
+CCB.AddChunk(CodeCompletionString::CK_SemiColon);
+Results.AddResult(CodeCompletionResult(CCB.TakeString(), CCP_CodePattern,
+                                       CXCursor_Constructor));
+```
+
+### Result
+
+```hlsl
+RWStructuredBuffer<float4> buf : |
+// suggests: register(u0, space0) <- slot filtered by type 
+//           packoffset(c0)
+//           SV_Target, SV_Position, SV_DispatchThreadID, ...
+
+StructuredBuffer<float4> buf : |
+// suggests: register(t0, space0) <- correct SRV slot 
+
+SamplerState s : |
+// suggests: register(s0, space0) <- correct sampler slot 
+```
+
+Tab navigation works between placeholders:
+- Select `register(u0, space0)` -> cursor on `u0` -> Tab -> cursor on `space0`
+
+### Files Modified
+
+- `clang/include/clang/Parse/Parser.h` - `ParseHLSLAnnotations` and
+  `MaybeParseHLSLAnnotations(Declarator &D)` updated to pass `const Declarator *D`
+- `clang/lib/Parse/ParseHLSL.cpp` - `tok::code_completion` hook calling
+  `CodeCompleteHLSLAnnotation(D)`
+- `clang/include/clang/Sema/SemaCodeCompletion.h` - declaration of
+  `CodeCompleteHLSLAnnotation(const Declarator *D = nullptr)`
+- `clang/lib/Sema/SemaCodeComplete.cpp` - full implementation
+- `clang-tools-extra/clangd/unittests/CodeCompleteTests.cpp` - tests 
+
+---
+## Idea I12: Code Completion for HLSL Vector Swizzle Members
+
+### Gap
+
+Typing `v.` on an HLSL vector produced no swizzle component suggestions from
+clangd. Additionally, typing a partial swizzle like `v.x` produced no
+continuation suggestions:
+
+```hlsl
+float3 v;
+v.|    // no suggestions
+v.x|   // no suggestions
+v.xr|  // no suggestions (invalid - mixing sets)
+```
+
+### Root Cause
+
+`CodeCompleteMemberReferenceExpr` handled `RecordDecl` members and ObjC
+properties, but had no case for `ExtVectorType`, the AST representation of
+HLSL vectors (`float2`, `float4`, etc.). The type fell through all branches
+with no results.
+
+Additionally, the partially-typed swizzle prefix (e.g. `"x"` when user typed
+`v.x`) was available via `SemaRef.PP.getCodeCompletionFilter()` but was not
+being used to filter or extend suggestions.
+
+### Solution (Implemented)
+
+Added `AddHLSLVectorSwizzleCompletions` called from `DoCompletion` inside
+`CodeCompleteMemberReferenceExpr`:
+
+```cpp
+} else if (getLangOpts().HLSL && !IsArrow) {
+  if (const auto *VT = BaseType->getAs<ExtVectorType>())
+    AddHLSLVectorSwizzleCompletions(SemaRef, Results, VT);
+  else if (const auto *MT = BaseType->getAs<ConstantMatrixType>())
+    AddHLSLMatrixSwizzleCompletions(SemaRef, Results, MT);
+}
+```
+
+`AddHLSLVectorSwizzleCompletions` reads `getCodeCompletionFilter()` to get
+the already-typed prefix and applies three semantic rules:
+
+1. **No mixing sets**: `xyzw` and `rgba` cannot be mixed (e.g. `xr` is
+   invalid in HLSL and produces a compiler error)
+2. **Max 4 components**: swizzles longer than 4 are invalid
+3. **Only valid components for the vector size**: `float2` has no `z` or `b`
+
+The `filterText` of each suggestion includes the already-typed prefix so the
+clangd client can match correctly:
+
+```cpp
+StringRef Filter = SemaRef.PP.getCodeCompletionFilter();
+// ...
+if (!Filter.empty()) {
+  llvm::SmallString<8> FullText(Filter);
+  FullText += XYZWNames[I];
+  CCB.AddTypedTextChunk(Results.getAllocator().CopyString(FullText));
+} else {
+  CCB.AddTypedTextChunk(XYZWNames[I]);
+}
+```
+
+### Rules Summary
+
+| Condition | Behavior |
+|---|---|
+| `v.` | suggests `x`, `y`, `z`, `r`, `g`, `b` (for `float3`) |
+| `v.x` | suggests `x`, `y`, `z` only (xyzw set detected, rgba excluded) |
+| `v.r` | suggests `r`, `g`, `b` only (rgba set detected, xyzw excluded) |
+| `v.xr` | no suggestions (mixing sets - semantically invalid) |
+| `v.xyzw` | no suggestions (4 components - maximum reached) |
+
+### Files Modified
+
+- `clang/lib/Sema/SemaCodeComplete.cpp`, `AddHLSLVectorSwizzleCompletions`
+  function + hook in `CodeCompleteMemberReferenceExpr`
+
+---
+
+## Idea I13: Code Completion for HLSL Matrix Swizzle Members
+
+### Gap
+
+Typing `m.` on an HLSL matrix produced no swizzle component suggestions.
+HLSL supports two matrix swizzle notations that cannot be mixed:
+
+```hlsl
+float2x2 m;
+m.|         // no suggestions
+m._m00|     // no suggestions
+m._11|      // no suggestions
+m._m00_11|  // no suggestions (invalid - mixing notations)
+```
+
+### Root Cause
+
+Same as I12, `CodeCompleteMemberReferenceExpr` had no case for
+`ConstantMatrixType`. Added in the same branch as I12.
+
+### Solution (Implemented)
+
+`AddHLSLMatrixSwizzleCompletions` reads `getCodeCompletionFilter()` and
+applies three semantic rules specific to matrix swizzles:
+
+1. **No mixing notations**: `_m` (0-indexed) and `_` (1-indexed) cannot
+   be mixed (e.g. `_m00_11` is invalid)
+2. **Max 4 components**: same as vector swizzles
+3. **Only valid indices for the matrix size**: `float2x2` has no `_m22`
+
+Detection of which notation is in use is based on the filter prefix:
+- Starts with `_m` -> 0-indexed notation, each component is 4 chars (`_mRC`)
+- Starts with `_` (not `_m`) -> 1-indexed notation, each component is 3 chars (`_RC`)
+- Filter size must be a multiple of the component size (no mid-component suggestions)
+
+```cpp
+if (Filter.starts_with("_m")) {
+  UseOneNotation = false;
+  if (Filter.size() % 4 != 0 || Filter.size() >= 16) return;
+} else if (Filter.starts_with("_")) {
+  UseMNotation = false;
+  if (Filter.size() % 3 != 0 || Filter.size() >= 12) return;
+} else {
+  return; // unknown prefix
+}
+```
+
+The `filterText` includes the already-typed prefix (same technique as I12).
+
+### Rules Summary
+
+| Condition | Behavior |
+|---|---|
+| `m.` | suggests `_m00`..,`_m11`, `_11`..`_22` (for `float2x2`) |
+| `m._m00` | suggests `_m00_m00`, `_m00_m01`, etc. (`_m` notation locked) |
+| `m._11` | suggests `_11_11`, `_11_12`, etc. (`_` notation locked) |
+| `m._m00_11` | no suggestions (mixing notations - invalid) |
+| `m._m00_m01_m10_m11` | no suggestions (4 components - maximum) |
+
+### Files Modified
+
+- `clang/lib/Sema/SemaCodeComplete.cpp`, `AddHLSLMatrixSwizzleCompletions`
+  function + hook in `CodeCompleteMemberReferenceExpr` (shared with I12)
 
 ---
 
@@ -731,8 +1362,13 @@ if (const auto *RB = llvm::dyn_cast<HLSLResourceBindingAttr>(A)) {
 | I1 | Hover for semantics | `getSpelling()` returns `(No spelling)` for `HLSLParsedSemanticAttr` | Implemented, explicit `def` per semantic in `Attr.td` + `SemaHLSL.cpp` updated; 7 system semantics working |
 | I2 | Hover for loop/branch attrs | `AttributedStmt` not traversed in `Selection.cpp` | Implemented, `TraverseAttributedStmt` added to `Selection.cpp`; all 4 attributes working |
 | I3 | Hover for `out`/`inout` qualifiers | `ParmVarDecl` type printed as internal C++ `float &__restrict` | Prototype confirmed working in all 3 locations |
-I4 | Hover for vector swizzle and matrix element access| No case in getHoverContents for ExtVectorElementExpr / MatrixElementExpr | Added a dyn_cast branches in getHoverContents for both node types |
-I5 | RootSignature hover leaks internal identifier | Original string literal discarded by parser; only generated __hlsl_rootsig_decl_<hash> stored | Skip printPretty, now shows just the documentation |
-I6 | register hover not triggered inside argument | Zero-width SourceRange in HLSLResourceBindingAttr; cursor inside (t1) never matched | Zero-width SourceRange fixed, now the hover shows documentation |
+| I4 | Hover for vector swizzle and matrix element access | No case in `getHoverContents` for `ExtVectorElementExpr` / `MatrixElementExpr` | Added `dyn_cast` branches in `getHoverContents` for both node types |
+| I5 | RootSignature hover leaks internal identifier | Original string literal discarded by parser; only generated `__hlsl_rootsig_decl_<hash>` stored | Skip `printPretty`, now shows just the documentation |
+| I6 | `register` hover not triggered inside argument | Zero-width `SourceRange` in `HLSLResourceBindingAttr`; cursor inside `(t1)` never matched | Zero-width `SourceRange` fixed, hover now shows documentation |
 | I7 | Hover for resource types | Clang-level bugs: `Texture2D` partial spec, `RWTexture2D` not implemented, `SamplerState` incomplete | All three are Clang bugs, prerequisites for clangd fixes |
-| I8 | Hover for `register` bindings | `Texture2D`/`RWTexture2D` blocked by I4; `SamplerState` attr present but not traversed; no display handler in `Hover.cpp` | Depends on I4; `SamplerState` traversal under investigation | 
+| I8 | Hover for `register` bindings | `Texture2D`/`RWTexture2D` blocked by I7; `SamplerState` attr present but not traversed; no display handler in `Hover.cpp` | Depends on I7; `SamplerState` traversal under investigation |
+| I9 | Completion inside `[...]` mixes statement and declaration attrs | `ParseMicrosoftAttributes` had no HLSL-aware filtering; `IsStmt` not threaded through | Implemented: `IsStmtContext` + `bool RequireStmt` (simplified from `optional<bool>`); `CodeCompleteHLSLAttributes` with `ExcludeKind` |
+| I10 | Completion inside `register(...)` shows generic results | No `tok::code_completion` hooks inside `AT_HLSLResourceBinding` parser | Implemented: hooks for slot prefix and `space0`; `CodeCompleteHLSLResourceSlot(D)` filters by declared type (e.g. only `u0` for `RWStructuredBuffer`) |
+| I11 | Completion after `:` shows nothing; no type-aware slot filtering | No hook in `ParseHLSLAnnotations`; `Declarator*` not threaded through | Implemented: hook added; `CodeCompleteHLSLAnnotation(D)` filters slot by record name; snippet Tab stops for `register` and `packoffset` |
+| I12 | No swizzle completion for HLSL vectors | `ExtVectorType` not handled in `CodeCompleteMemberReferenceExpr` | Implemented: `AddHLSLVectorSwizzleCompletions` with set-mixing detection and 4-component limit via `getCodeCompletionFilter()` |
+| I13 | No swizzle completion for HLSL matrices | `ConstantMatrixType` not handled in `CodeCompleteMemberReferenceExpr` | Implemented: `AddHLSLMatrixSwizzleCompletions` with notation-mixing detection (`_m` vs `_`) and 4-component limit |
