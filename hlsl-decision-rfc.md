@@ -3,7 +3,7 @@
 **GSoC 2026 - LLVM Organization**  
 Author: Maria Fernanda Guimarães | Mentors: Finn Plummer, Ashley Coleman
 
-This document is a companion to the [HLSL RFC](https://docs.google.com/document/d/1vrPPh_JDdTBUqbaAJazq5YgmCywiozfK/edit?usp=sharing&ouid=113807965937624010535&rtpof=true&sd=true) and
+This document is a companion to the [HLSL RFC](https://docs.google.com/document/d/1uDehCzHl-fKdtx0GmiLrJm9SJ8nIKMOimsEQtLjWClU/edit?usp=sharing) and
 records all options investigated for each gap, including options that were discarded and the
 reasons why. 
 
