@@ -1,6 +1,6 @@
 # [RFC] Improving HLSL Support in clangd
 
-**GSoC 2026 — LLVM Organization**
+**GSoC 2026 - LLVM Organization**  
 Author: Maria Fernanda Guimarães | Mentors: Finn Plummer, Ashley Coleman
 
 ## Abstract

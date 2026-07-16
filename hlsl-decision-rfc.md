@@ -1,4 +1,4 @@
-# HLSL RFC - Options Considered
+# [RFC] - Options Considered
 
 **GSoC 2026 - LLVM Organization**  
 Author: Maria Fernanda Guimarães | Mentors: Finn Plummer, Ashley Coleman

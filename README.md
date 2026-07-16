@@ -18,6 +18,8 @@ solutions for each gap.
 ├── compile_commands.json       # Build flags for each test file
 ├── .clangd                     # Fallback config (see note below)
 ├── gap-analysis.md             # Gap analysis
+├── hlsl-decision-rfc.md        # All options considered for the RFC
+├── hlsl-rfc.md                 # Proposed improvements to HLSL support in clangd
 ├── implementation-ideas.md     # Implementation ideas and open questions
 └── test_*.hlsl                 # Test files, one per construct category
 ```
