@@ -94,11 +94,13 @@ approach is more reliable for this multi-file project.
 
 ## Documents
 
+- **`hlsl-rfc.md`**: This document proposed improvements to HLSL support in clangd.
+
 - **`hlsl-decision-rfc.md`**: This document is a companion to the RFC and
   records all options investigated for each gap, including options that were discarded and the
   reasons why. 
 
-- **`gap-analysis.md`**: full gap analysis across 7 categories of
+- **`gap-analysis.md`**: Full gap analysis across 7 categories of
   HLSL constructs, configuration gaps, and architectural gaps. Each construct
   is tested for hover, completion, go-to-definition, and diagnostics, with
   AST dump evidence and gap classification (tooling gap vs frontend gap).
