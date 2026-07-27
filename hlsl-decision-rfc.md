@@ -268,6 +268,23 @@ correct one.
 The generic fix is consistent with the existing pattern for declaration attributes, requires no
 language-specific guards, and benefits the entire clangd ecosystem.
 
+**Note - scope of the fix (`SelectionTree` vs. `RecursiveASTVisitor` core):** a reviewer asked
+whether this traversal should instead be added directly to
+`clang/include/clang/AST/RecursiveASTVisitor.h`, so that every consumer of the visitor (not
+only clangd) would benefit. We investigated this and found an open upstream PR attempting
+exactly that change:
+[llvm/llvm-project#117692](https://github.com/llvm/llvm-project/pull/117692) ("Traverse
+attributes in `AttributedStmt`"), unmerged since November 2024. Making the base
+`RecursiveASTVisitor` traverse into `AttributedStmt`'s attributes also causes it to traverse
+into attribute *arguments*, which broke `[[clang::nonblocking]]`/`[[clang::nonallocating]]`
+analysis when combined with `[[assume(...)]]`, a reviewer on that PR traced the root cause to
+`SemaFunctionEffects.cpp`'s visitor needing its own opt-out from attribute-argument traversal.
+Fixing this properly requires auditing every `RecursiveASTVisitor` consumer that currently
+relies on the existing behavior, a substantially larger effort than fits this project's scope,
+and one that has remained unfinished upstream for over a year despite the root cause being
+understood. We are keeping this fix scoped to clangd's `SelectionTree` (Option B above) for
+this project, and will reference #117692 as related future work.
+
 ---
 
 ## I3 - Hover for `out`/`inout` Parameter Qualifiers
@@ -294,7 +311,7 @@ non-HLSL types incorrectly.
 
 ---
 
-**Option B - `dyn_cast<ParmVarDecl>` branch checking `HLSLParamModifierAttr` - Chosen**
+**Option B - `dyn_cast<ParmVarDecl>` branch checking `HLSLParamModifierAttr`**
 
 Add a `ParmVarDecl` branch before the generic `ValueDecl` branch at each of the three
 affected locations in `Hover.cpp`. The branch strips the reference type and prepends the HLSL
@@ -400,11 +417,74 @@ is the default in HLSL.
 
 ---
 
-### Why Option B
+**Option C - Move the reconstruction into a `ParmVarDecl` helper - Chosen**
 
-Correctly scoped to HLSL parameters via `HLSLParamModifierAttr`. Does not risk affecting
-non-HLSL types. Follows the same pattern used elsewhere in `Hover.cpp` for
-language-specific constructs.
+A reviewer asked whether hover should really be responsible for reconstructing the HLSL
+type, or whether `ParmVarDecl` (or a function using it) should provide the string directly,
+so that any caller could simply request it. This is a valid point: Option B works, but
+duplicates the same `isOut()`/`isInOut()`/`getNonReferenceType()` logic three times inside
+`Hover.cpp`, and ties HLSL-parameter knowledge to a clangd-specific file.
+
+The fix: add a new method directly on `ParmVarDecl`:
+
+```cpp
+// clang/include/clang/AST/Decl.h, inside class ParmVarDecl
+std::string getHLSLParamTypeAsWritten(const PrintingPolicy &Policy) const;
+```
+
+```cpp
+// clang/lib/AST/Decl.cpp
+std::string ParmVarDecl::getHLSLParamTypeAsWritten(
+    const PrintingPolicy &Policy) const {
+  if (const auto *Mod = getAttr<HLSLParamModifierAttr>()) {
+    QualType Base = getType().getNonReferenceType();
+    std::string BaseStr = Base.getAsString(Policy);
+    if (Mod->isOut())
+      return "out " + BaseStr;
+    if (Mod->isInOut())
+      return "inout " + BaseStr;
+    return BaseStr;
+  }
+  return getType().getAsString(Policy);
+}
+```
+
+All three `Hover.cpp` call sites are simplified to a single call each:
+
+```cpp
+// Case 1
+else if (const auto *PVD = dyn_cast<ParmVarDecl>(D))
+  HI.Type = HoverInfo::PrintedType(
+      PVD->getHLSLParamTypeAsWritten(PP).c_str());
+else if (const auto *VD = dyn_cast<ValueDecl>(D))
+  HI.Type = printType(VD->getType(), Ctx, PP);
+
+// Case 2 (toHoverInfoParam)
+Out.Type = HoverInfo::PrintedType(
+    PVD->getHLSLParamTypeAsWritten(PP).c_str());
+
+// Case 3
+HI.Definition = printDefinition(D, PP, TB);
+if (const auto *PVD = dyn_cast<ParmVarDecl>(D))
+  HI.Definition =
+      PVD->getHLSLParamTypeAsWritten(PP) + " " + PVD->getNameAsString();
+```
+
+`Hover.cpp` no longer inspects `HLSLParamModifierAttr` at all, it only asks the
+`ParmVarDecl` for the type it should display. This mirrors how other language-specific
+attribute checks (e.g. `isDestroyedInCallee()`'s `hasAttr<NSConsumedAttr>()` check) already
+live directly on `ParmVarDecl`.
+
+---
+
+### Why Option C
+
+Correctly scoped to HLSL parameters via `HLSLParamModifierAttr`, without risk to non-HLSL
+types. Removes duplicated reconstruction logic from three places in `Hover.cpp` down to one
+method call each. Makes the logic reusable by any other consumer with a `ParmVarDecl*`
+(diagnostics, `-ast-dump`, clang-tidy checks), not just clangd hover, directly addressing
+the reviewer's concern that this "sounds like something that could be useful at other places
+as well."
 
 ---
 
@@ -529,6 +609,32 @@ Options A and B either require deeper changes out of scope for this patch or are
 not possible. Option C is the minimal correct fix: it removes the confusing output and still
 shows the useful documentation. Recovering the original string is documented as a known
 limitation and future work.
+
+**Follow-up investigation - is this really a hover-only fix, or could it be solved on the
+data side?** A reviewer asked why this needs special handling in hover instead of being
+fixed on the data side, such that generic code would produce the right value. Re-examining
+`RootSignatureAttr`, it turns out **recovering information is no longer the blocker**:
+`RootSignatureAttr` already carries `getSignatureDecl()`, an `HLSLRootSignatureDecl*` that
+stores the fully parsed root signature as an array of `RootElement`s (`DescriptorTable`,
+`RootConstants`, `RootDescriptor`, `StaticSampler`, etc.), the AST already has everything
+needed to reconstruct a meaningful representation, no `Attr.td` or parser changes required.
+
+The remaining blocker is **presentation**. The only printer currently available for
+`RootElement` is its `operator<<`, declared in
+`llvm/include/llvm/Frontend/HLSL/HLSLRootSignature.h` and used by `dumpRootElements()` for
+`-ast-dump`. We prototyped calling it from hover (via a `getPrintedRootSignature()` helper
+on `HLSLRootSignatureDecl`, using `llvm::interleaveComma` over `getRootElements()`), and
+confirmed manually that it renders every field of every element, including defaulted ones
+(e.g. `numDescriptors = 1, space = 0, offset = DescriptorTableOffsetAppend, flags = ...`),
+producing multi-line output appropriate for `-ast-dump` but too verbose for a hover tooltip.
+
+A more compact, hover-appropriate formatter (e.g. one that shows only resource class and
+register per element, like `SRV(t0), UAV(u0), DescriptorTable(2 clauses)`) is possible in
+principle, but is a separate, non-trivial implementation effort (visiting each `RootElement`
+variant and extracting only the fields relevant for a quick-glance summary). Given the
+GSoC timeline, we are keeping the current Option C behavior (suppress `printPretty`, show
+documentation only) rather than shipping a partially-polished formatter, and will file a
+tracking issue for building a proper hover-facing reconstruction as future work.
 
 ---
 
@@ -877,6 +983,28 @@ correct for all resource types defined in the HLSL headers. The `CXCursor_Constr
 trick is required due to `shouldPatchPlaceholder0` converting the last placeholder
 to `$0` for `RK_Pattern` results.
 
+**Follow-up refinement - gating `SV_*` suggestions:** a reviewer pointed out that
+identifiers after `:` can be any user-declared name in a lot of contexts, especially for
+inter-stage buffer entries (ISBE) passed between shader stages, so unconditionally
+suggesting `SV_*` semantics alongside `register`/`packoffset` was premature, it competes
+with the much larger space of valid user identifiers. `CodeCompleteHLSLAnnotation` now reads
+the already-typed prefix via `SemaRef.getPreprocessor().getCodeCompletionFilter()` (the same
+mechanism used in I10/I11) and only emits `AT_HLSLParsedSemantic` (`SV_*`) candidates once
+that prefix begins with `s`/`S`:
+
+```cpp
+StringRef Filter = SemaRef.getPreprocessor().getCodeCompletionFilter();
+bool ShouldSuggestSemantics =
+    !Filter.empty() && (Filter.front() == 's' || Filter.front() == 'S');
+...
+if (IsParsedSemantic && !ShouldSuggestSemantics)
+  continue;
+```
+
+`register` and `packoffset` candidates are unaffected by this gate and are always offered,
+since the reviewer's concern was specifically about `SV_*` crowding out user identifiers,
+not about these two annotations.
+
 ---
 
 ## I10 - No Swizzle Completion for HLSL Vectors
@@ -944,6 +1072,45 @@ Semantically invalid suggestions (like `pos.xr`) must
 be filtered in `SemaCodeComplete`, not left to the client. The client can rank and
 filter valid results, but cannot know which HLSL swizzle combinations are invalid.
 
+**Follow-up refinement - making the completion configurable:** a reviewer noted that
+selecting more than one vector component is a very frequent editing operation, so a
+completion popup appearing on every `.` typed after a vector risks becoming distracting; the
+suggestion was to at least make it optional, if not drop it entirely in favor of relying on
+diagnostics for invalid swizzles. We opted to keep the completion but make it toggleable,
+adding a `Completion: HLSLSwizzle` option to clangd's configuration:
+
+- `clang-tools-extra/clangd/ConfigFragment.h` / `Config.h`: new
+  `std::optional<Located<bool>> HLSLSwizzle` fragment field and `bool HLSLSwizzle = true`
+  config field, following the same pattern as the existing `Completion: AllScopes` toggle.
+- `ConfigYAML.cpp` / `ConfigCompile.cpp`: parse and compile the YAML value into `Config`,
+  identical in structure to `AllScopes`.
+- `CodeComplete.h` / `CodeComplete.cpp` / `ClangdServer.cpp`: thread the value into
+  `clangd::CodeCompleteOptions`, then into `clang::CodeCompleteOptions` via
+  `getClangCompleteOpts()`.
+- `clang/include/clang/Sema/CodeCompleteOptions.h` /
+  `clang/include/clang/Sema/CodeCompleteConsumer.h`: new
+  `IncludeHLSLSwizzleCompletions` bitfield and `includeHLSLSwizzleCompletions()` accessor.
+- `SemaCodeComplete.cpp`: the existing HLSL swizzle branch in `CodeCompleteMemberReferenceExpr`
+  is gated on the new accessor:
+
+```cpp
+} else if (getLangOpts().HLSL && !IsArrow &&
+           SemaRef.CodeCompletion().CodeCompleter->includeHLSLSwizzleCompletions()) {
+  if (const auto *VT = BaseType->getAs<ExtVectorType>())
+    AddHLSLVectorSwizzleCompletions(SemaRef, Results, VT);
+  else if (const auto *MT = BaseType->getAs<ConstantMatrixType>())
+    AddHLSLMatrixSwizzleCompletions(SemaRef, Results, MT);
+}
+```
+
+A single option covers both vector and matrix swizzles rather than two separate flags,
+since the reviewer's feedback treated them the same way. Diagnostics for invalid swizzle
+access are implemented independently of this completion path and are unaffected by the
+setting. This was verified manually: with `Completion: HLSLSwizzle: false` in `.clangd`,
+typing `.` after a vector or matrix produces no suggestions ("No suggestions." in the
+editor), while an out-of-bounds matrix component access (e.g. `m._m22` on a `float2x2`)
+still reports `hlsl_matrix_index_out_of_bounds` as expected.
+
 ---
 
 ## I11 - No Swizzle Completion for HLSL Matrices
@@ -987,3 +1154,9 @@ Same `filterText`-prefix technique as I10.
 
 Consistent implementation. Matrix swizzle mixing (`_m00_11`) is a compiler
 error in HLSL, so must be filtered in Sema per the same principle as I10.
+
+**Configurability:** matrix swizzle completions are gated by the same single
+`Completion: HLSLSwizzle` option described in I10, the `AddHLSLMatrixSwizzleCompletions`
+call site shares the exact same guard as the vector one, so there is no separate matrix-only
+toggle. Diagnostics for invalid matrix component access continue to work regardless of the
+setting.

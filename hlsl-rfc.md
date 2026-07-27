@@ -100,6 +100,19 @@ attributes using the existing hover infrastructure. Since these attributes alrea
 `Microsoft<>` spellings in `Attr.td`, no changes are required in `Hover.cpp`. The solution is
 generic and also improves support for other statement attributes in Clang, not only HLSL.
 
+**Note on scope:** we also investigated whether this fix should instead live directly in
+`clang/include/clang/AST/RecursiveASTVisitor.h`, so that any consumer of the visitor (not
+just clangd) would benefit, not only clangd's `SelectionTree`. There is already an open
+upstream PR attempting exactly that change
+([#117692](https://github.com/llvm/llvm-project/pull/117692)), unmerged
+since November 2024: making `RecursiveASTVisitor` traverse into `AttributedStmt`'s
+attributes also causes it to traverse into attribute *arguments*, which broke
+`[[clang::nonblocking]]`/`[[clang::nonallocating]]` analysis when combined with
+`[[assume(...)]]`. Fixing this properly requires auditing every `RecursiveASTVisitor`
+consumer that relies on the current behavior, a substantially larger effort than fits this
+project's scope. We are keeping the fix scoped to clangd's `SelectionTree` for this project
+and tracking #117692 as related future work.
+
 ---
 
 ## I3 — Hover for out/inout Parameter Qualifiers
@@ -120,10 +133,11 @@ line in hover tooltip.
 
 ### Proposed Solution
 
-For each of the three cases, add a `ParmVarDecl` branch that checks for
-`HLSLParamModifierAttr` and reconstructs the HLSL type by stripping the reference and
-prepending the qualifier. The `in` qualifier is omitted from display because it is the
-default in HLSL.
+The reconstruction logic lives on `ParmVarDecl`, as a new
+`getHLSLParamTypeAsWritten(const PrintingPolicy &Policy)` helper. It checks for
+`HLSLParamModifierAttr`, strips the internal reference type, and prepends the qualifier
+(`out `/`inout `), falling back to the plain printed type when the modifier is absent or is
+the implicit `in`. `Hover.cpp` simply calls this method at all three call sites, making the logic reusable by any other consumer with access to a `ParmVarDecl` (diagnostics, `-ast-dump`, clang-tidy checks, etc.), not just clangd.
 
 ---
 
@@ -167,6 +181,18 @@ generated name. This generated identifier is stored in `RootSignatureAttr` via
 `getSignatureIdent()`. The original string literal is discarded after parsing and not stored
 in the attribute. The generic hover path calls `A->printPretty()`, which prints the stored
 identifier.
+
+**Note on further investigation:** following reviewer feedback asking whether this could be
+solved on the data side rather than special-cased in hover, we found that `RootSignatureAttr`
+already carries a `SignatureDecl` (an `HLSLRootSignatureDecl*`) with the fully parsed root
+signature elements, so recovering the underlying information from the AST is not actually
+the problem. The remaining obstacle is presentation: the only formatter currently available
+for these elements (`RootElement::operator<<`) was built for `-ast-dump`/debug output, and
+produces a verbose, multi-line result that isn't well suited for a hover tooltip (confirmed
+by prototyping it). Producing a compact, hover-appropriate formatter is a separate,
+non-trivial piece of work, so we are keeping the current behavior (suppress the leaky
+`printPretty`, show documentation only) for this project, and will file a tracking issue for
+a richer, user-facing reconstruction as future work.
 
 ### Proposed Solution
 
@@ -232,8 +258,9 @@ contexts).
 ### Expected Behaviour
 
 Typing `register(` should suggest the correct slot prefix for the declared resource type
-(e.g. `u0` for `RWStructuredBuffer`, `t0` for `Texture2D`). Typing `register(t0,` should
-suggest `space0`. Both should be Tab-navigable snippets.
+(e.g. `u0` for `RWStructuredBuffer`, `t0` for `Texture2D`, `b0` for `ConstantBuffer`, `s0`
+for `SamplerState`). Typing `register(t0,` should suggest `space0`. Both should be
+Tab-navigable snippets.
 
 ### Gap
 
@@ -247,9 +274,13 @@ also not threaded through, making type-aware slot filtering impossible.
 
 Two `ConsumeCodeCompletionToken()` hooks added inside `AT_HLSLResourceBinding`.
 `CodeCompleteHLSLResourceSlot(D)` receives the `Declarator*` and resolves the resource class
-by matching the `CXXRecordDecl` name (e.g. `starts_with("RW")` → `u`,
-`starts_with("Texture")` → `t`). `CodeCompleteHLSLResourceSpace()` suggests `space` with a
-placeholder `0`.
+by matching the `CXXRecordDecl` name (e.g. `starts_with("RW")` -> `u`,
+`starts_with("Texture")` -> `t`, `ConstantBuffer` -> `b`, `starts_with("Sampler")` -> `s`).
+`CodeCompleteHLSLResourceSpace()` suggests `space` with a placeholder `0`.
+
+**Note:** completion does not attempt to account for the case where the first argument
+to `register` is a shader model, which can shift the expected slot depending on shader stage, an incorrect suggestion there would be worse than no suggestion, so this case is left
+out of scope intentionally.
 
 ---
 
@@ -280,6 +311,13 @@ resolved by `CXXRecordDecl` name since `HLSLAttributedResourceType` is not yet b
 parse time. `register` and `packoffset` use `CCP_CodePattern` with `CXCursor_Constructor`
 to preserve both Tab stops.
 
+**Gating `SV_*` suggestions:** identifiers after `:` can be any user-declared name in many
+contexts (e.g. inter-stage buffer entries between shader stages), so unconditionally
+suggesting all `SV_*` semantics alongside those names was noisy. `SV_*`
+candidates are now only offered once the already-typed filter (read via
+`getCodeCompletionFilter()`, the same mechanism used for I10/I11) begins with `S`/`s`;
+`register`/`packoffset` completions are unaffected and always offered.
+
 ---
 
 ## I10 — Code Completion for HLSL Vector Swizzle Members
@@ -302,8 +340,17 @@ invalid combinations like `v.xr` were not filtered.
 
 Add an `ExtVectorType` branch in `DoCompletion` inside `CodeCompleteMemberReferenceExpr`.
 `AddHLSLVectorSwizzleCompletions` reads `getCodeCompletionFilter()` and enforces three
-rules: (1) no mixing xyzw/rgba sets — detected from filter characters; (2) max 4 components;
+rules: (1) no mixing xyzw/rgba sets: detected from filter characters; (2) max 4 components;
 (3) only valid components for the vector size.
+
+**Making it configurable:** since selecting more than one vector component is a very
+frequent editing operation, a completion popup on every `.` after a vector can become
+distracting. A `Completion: HLSLSwizzle` option was added to clangd's configuration,
+following the same pattern as existing per-feature toggles (e.g.
+`Completion: HeaderInsertion`). It defaults to enabled, preserving current behavior, and can
+be disabled per-project via `.clangd`. Diagnostics for invalid swizzle access are
+implemented independently of completion and continue to fire regardless of this setting;
+this was confirmed by manual testing with the option disabled.
 
 ---
 
@@ -327,3 +374,6 @@ Add a `ConstantMatrixType` branch in `DoCompletion`. `AddHLSLMatrixSwizzleComple
 detects the notation from the filter prefix: `starts_with("_m")` locks to 0-indexed (4
 chars/component, max 16 chars total), `starts_with("_")` locks to 1-indexed (3
 chars/component, max 12 chars total). Mixing notations returns no suggestions.
+
+**Making it configurable::** matrix swizzle completions are covered by the same
+`Completion: HLSLSwizzle` toggle described in I10.
